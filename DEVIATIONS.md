@@ -7,4 +7,5 @@
 | D3 | TensorFlow GCN/ChebNet (tkipf) | PyTorch ChebNet (`neardup/models/chebnet.py`) | Skill requires PyTorch; same Chebyshev K=3, hidden=16, Adam 1e-2 |
 | D4 | Precomputed MATLAB mat feature graphs | On-the-fly IPT synthesis from LFW with Table 1 transforms | Reproducible without proprietary TRAININGSET folders |
 | D5 | Full IPF spectral clustering stage | Single-IPT reconstruction eval | Focus on ChebNet+PRNU core; IPF clustering left as future work |
-| D6 | Weight decay on TF vars (sum) | Mean L2 on ChebConv1 | Stabilizes training with 96² pixel features |
+| D6 | Weight decay on TF vars (sum) | Mean L2 on ChebConv1 | Stabilizes training with high-D features |
+| D7 | 96×96 pixel features for GNN | 32×32 pooled pixels for ChebNet; 96×96 PRNU for links | Full 9216-D caused depth collapse; paper GNN still ChebNet K=3 |

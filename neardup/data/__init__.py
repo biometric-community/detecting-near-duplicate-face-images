@@ -85,13 +85,17 @@ def synthesize_ipt(
     return imgs, np.asarray(depths, dtype=np.int64), np.asarray(parents, dtype=np.int64), edges
 
 
-def node_features(imgs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Pixel + PRNU feature matrices [N, D]."""
+def node_features(imgs: np.ndarray, pool: int = 32) -> Tuple[np.ndarray, np.ndarray]:
+    """Pixel + PRNU feature matrices [N, D]. Pixel pooled to ``pool×pool`` for GNN tractability."""
     pix, prnu = [], []
     for i in range(imgs.shape[0]):
         g = imgs[i]
-        pix.append(flatten_norm(g))
-        prnu.append(flatten_norm(prnu_residual(g)))
+        g_pix = cv2.resize(g, (pool, pool), interpolation=cv2.INTER_AREA) if pool != 96 else g
+        pix.append(flatten_norm(g_pix))
+        # PRNU at full 96 for link prediction; pooled copy for optional concat features
+        r = prnu_residual(g)
+        r_pix = cv2.resize(r, (pool, pool), interpolation=cv2.INTER_AREA) if pool != 96 else r
+        prnu.append(flatten_norm(r_pix))
     return np.stack(pix, 0), np.stack(prnu, 0)
 
 
@@ -125,6 +129,7 @@ class IPTGraphDataset(Dataset):
         self.max_depth = max_depth
         self.n_graphs = n_graphs
         self.feature = feature
+        self.pool = 32
         self.rng = np.random.RandomState(seed)
         # pre-sample root image indices for reproducibility
         self.root_idx = self.rng.randint(0, len(image_paths), size=n_graphs)
@@ -136,7 +141,13 @@ class IPTGraphDataset(Dataset):
         rng = np.random.RandomState(int(self.root_idx[idx]) + idx * 9973)
         root = load_gray96(self.paths[int(self.root_idx[idx])])
         imgs, depths, parents, edges = synthesize_ipt(root, self.n_nodes, rng, self.max_depth)
-        pix, prnu = node_features(imgs)
+        pool = int(getattr(self, "pool", 32))
+        pix, prnu = node_features(imgs, pool=pool)
+        # Full-res PRNU for link prediction
+        prnu_full = []
+        for i in range(imgs.shape[0]):
+            prnu_full.append(flatten_norm(prnu_residual(imgs[i])))
+        prnu_full_a = np.stack(prnu_full, 0)
         if self.feature == "prnu":
             feat = prnu
         elif self.feature == "concat":
@@ -157,7 +168,7 @@ class IPTGraphDataset(Dataset):
             "depth": torch.from_numpy(depths),
             "parents": torch.from_numpy(parents),
             "edges": edge_t,
-            "prnu": torch.from_numpy(prnu),
+            "prnu": torch.from_numpy(prnu_full_a),
         }
 
 
