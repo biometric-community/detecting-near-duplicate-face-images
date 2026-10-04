@@ -1,0 +1,6 @@
+torch>=2.0
+numpy
+opencv-python-headless
+PyYAML
+matplotlib
+Pillow

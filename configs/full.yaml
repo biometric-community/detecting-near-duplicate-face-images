@@ -1,0 +1,33 @@
+paper:
+  slug: detecting-near-duplicate-face-images
+  title: "Detecting Near-Duplicate Face Images"
+data:
+  root: ../../datasets/lfw/lfw
+  n_train_graphs: 800
+  n_val_graphs: 100
+  n_test_graphs: 100
+model:
+  name: chebnet
+  n_nodes: 10
+  max_depth: 4
+  hidden: 16
+  max_degree: 3
+  dropout: 0.5
+  feature: pixel
+train:
+  protocol: full
+  epochs: 100
+  batch_size: 16
+  lr: 0.01
+  weight_decay: 0.0005
+  early_stopping: 10
+  seed: 42
+  num_workers: 4
+  max_steps: null
+paths:
+  checkpoint_dir: outputs/checkpoints/full
+  log_dir: outputs/logs
+  pred_dir: outputs/predictions/full
+  figure_dir: outputs/figures
+device: cuda
+cuda_device: 0
