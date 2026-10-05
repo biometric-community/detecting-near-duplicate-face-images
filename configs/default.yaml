@@ -13,7 +13,7 @@ model:
   hidden: 16
   max_degree: 3
   dropout: 0.5
-  feature: pixel
+  feature: concat
 train:
   protocol: subset
   epochs: 20
@@ -21,6 +21,8 @@ train:
   lr: 0.01
   weight_decay: 0.0005
   early_stopping: 10
+  class_weights: true
+  train_adj: feature
   seed: 42
   num_workers: 2
 paths:

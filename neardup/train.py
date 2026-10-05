@@ -33,15 +33,49 @@ def resolve_device(cfg):
     return torch.device("cpu")
 
 
-def masked_ce(logits, y_onehot, weight_decay, model):
+def masked_ce(logits, y_onehot, weight_decay, model, class_weights=None):
     # logits [B,N,C], y [B,N,C]
     logp = F.log_softmax(logits, dim=-1)
-    loss = -(y_onehot * logp).sum(-1).mean()
-    # L2 on first-layer weights (mean, not sum — avoid dominating CE with 9k-D features)
+    # per-class weights
+    if class_weights is not None:
+        w = class_weights.view(1, 1, -1).to(logits.device)
+        loss = -(y_onehot * logp * w).sum(-1).mean()
+    else:
+        loss = -(y_onehot * logp).sum(-1).mean()
     l2 = 0.0
     for p in model.conv1.parameters():
         l2 = l2 + p.pow(2).mean()
     return loss + weight_decay * l2
+
+
+@torch.no_grad()
+def estimate_class_weights(loader, n_class: int, n_batches: int = 8) -> torch.Tensor:
+    """Inverse-frequency depth weights from a few train batches (mean weight ≈ 1)."""
+    counts = torch.zeros(n_class, dtype=torch.float64)
+    for i, batch in enumerate(loader):
+        depth = batch["depth"]
+        for c in range(n_class):
+            counts[c] += (depth == c).sum().item()
+        if i + 1 >= n_batches:
+            break
+    counts = counts.clamp_min(1.0)
+    inv = 1.0 / counts
+    w = inv * (n_class / inv.sum())
+    return w.float()
+
+
+def adjacency_from_parents(parents: torch.Tensor) -> torch.Tensor:
+    """Build undirected tree adjacency from parent indices [B,N] (-1 = root)."""
+    b, n = parents.shape
+    adj = torch.zeros(b, n, n, dtype=torch.float32, device=parents.device)
+    for bi in range(b):
+        for child in range(n):
+            p = int(parents[bi, child].item())
+            if p >= 0:
+                adj[bi, p, child] = 1.0
+                adj[bi, child, p] = 1.0
+        adj[bi].fill_diagonal_(1.0)
+    return adj
 
 
 @torch.no_grad()
@@ -101,6 +135,15 @@ def main(argv=None):
     epochs = int(cfg["train"]["epochs"])
     early = int(cfg["train"].get("early_stopping", 10))
     max_steps = args.max_steps if args.max_steps is not None else cfg["train"].get("max_steps")
+    n_class = int(cfg["model"].get("max_depth", 4)) + 1
+    use_class_weights = bool(cfg["train"].get("class_weights", True))
+    train_adj_mode = str(cfg["train"].get("train_adj", "feature"))  # feature | tree
+    class_weights = None
+    if use_class_weights:
+        class_weights = estimate_class_weights(train_loader, n_class, n_batches=8).to(device)
+        print(f"class_weights={class_weights.detach().cpu().tolist()} train_adj={train_adj_mode}")
+    else:
+        print(f"class_weights=None train_adj={train_adj_mode}")
     history = {"epochs": [], "train_loss": [], "val_depth_acc": [], "val_root_acc": [], "val_ipt_recon": []}
     best_val = -1.0
     cost_val = []
@@ -123,10 +166,14 @@ def main(argv=None):
         running, count = 0.0, 0
         for batch in train_loader:
             x = batch["x"].to(device)
-            adj = batch["adj"].to(device)
+            parents = batch["parents"].to(device)
+            if train_adj_mode == "tree":
+                adj = adjacency_from_parents(parents)
+            else:
+                adj = batch["adj"].to(device)
             y = batch["y"].to(device)
             logits = model(x, adj)
-            loss = masked_ce(logits, y, wd, model)
+            loss = masked_ce(logits, y, wd, model, class_weights=class_weights)
             if not torch.isfinite(loss):
                 opt.zero_grad(set_to_none=True)
                 continue

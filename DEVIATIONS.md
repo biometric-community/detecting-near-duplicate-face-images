@@ -9,3 +9,5 @@
 | D5 | Full IPF spectral clustering stage | Single-IPT reconstruction eval | Focus on ChebNet+PRNU core; IPF clustering left as future work |
 | D6 | Weight decay on TF vars (sum) | Mean L2 on ChebConv1 | Stabilizes training with high-D features |
 | D7 | 96×96 pixel features for GNN | 32×32 pooled pixels for ChebNet; 96×96 PRNU for links | Full 9216-D caused depth collapse; paper GNN still ChebNet K=3 |
+| D8 | Feature-similarity adjacency only | Same paper-style feature-similarity adj for train+eval (default `train_adj: feature`); optional `train_adj: tree` ablation | Earlier tree-adj attempt masked depth collapse; with D9 features, paper adj is preferred |
+| D9 | Pixel / PRNU vectors only (often per-image normalized) | Append tiled edit-aware scalars: L2(gray, root) + mean(\|PRNU residual\|); adj kernel on those scalars | Mild Table-1 transforms look near-identical after per-image normalize, so depth was unlearnable; scalars accumulate with edits |

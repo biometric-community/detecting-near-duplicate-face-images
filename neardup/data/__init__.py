@@ -99,6 +99,30 @@ def node_features(imgs: np.ndarray, pool: int = 32) -> Tuple[np.ndarray, np.ndar
     return np.stack(pix, 0), np.stack(prnu, 0)
 
 
+def edit_aware_scalars(imgs: np.ndarray, tile: int = 32) -> np.ndarray:
+    """
+    Per-node scalars that accumulate with IPT edits (not wiped by per-image normalize):
+      - L2 distance of 96×96 gray to root (node 0), scaled by image size
+      - high-frequency energy = mean(|prnu_residual|)
+    Each scalar is tiled to ``tile`` dims so ChebNet can attend to them amid pooled pixels.
+    Returns [N, 2*tile].
+    """
+    n = imgs.shape[0]
+    root = imgs[0].astype(np.float64).reshape(-1)
+    denom = float(np.sqrt(root.size))
+    rows = []
+    for i in range(n):
+        g = imgs[i].astype(np.float64)
+        dist = float(np.linalg.norm(g.reshape(-1) - root) / max(denom, 1.0))
+        # normalize dist roughly into [0,1] for typical mild edits (cap at 80)
+        dist_n = min(dist / 80.0, 1.0)
+        hf = float(np.mean(np.abs(prnu_residual(imgs[i]))))
+        # typical residual mean abs ~ few gray levels; scale softly
+        hf_n = min(hf / 20.0, 1.0)
+        rows.append(np.concatenate([np.full(tile, dist_n, dtype=np.float32), np.full(tile, hf_n, dtype=np.float32)]))
+    return np.stack(rows, 0)
+
+
 def adjacency_from_features(feat: np.ndarray, self_loop: bool = True) -> np.ndarray:
     """Dense similarity adjacency (Gaussian kernel on L2)."""
     # feat [N,D]
@@ -143,18 +167,21 @@ class IPTGraphDataset(Dataset):
         imgs, depths, parents, edges = synthesize_ipt(root, self.n_nodes, rng, self.max_depth)
         pool = int(getattr(self, "pool", 32))
         pix, prnu = node_features(imgs, pool=pool)
+        # Edit-aware scalars (dist-to-root + HF energy), tiled — survive per-image normalize
+        edit = edit_aware_scalars(imgs, tile=pool)
         # Full-res PRNU for link prediction
         prnu_full = []
         for i in range(imgs.shape[0]):
             prnu_full.append(flatten_norm(prnu_residual(imgs[i])))
         prnu_full_a = np.stack(prnu_full, 0)
         if self.feature == "prnu":
-            feat = prnu
+            feat = np.concatenate([prnu, edit], axis=1)
         elif self.feature == "concat":
-            feat = np.concatenate([pix, prnu], axis=1)
+            feat = np.concatenate([pix, prnu, edit], axis=1)
         else:
-            feat = pix
-        adj = adjacency_from_features(feat)
+            feat = np.concatenate([pix, edit], axis=1)
+        # Adjacency from edit-aware block (more discriminative than pooled pixels alone)
+        adj = adjacency_from_features(edit)
         # one-hot depth labels (classes = max_depth+1)
         n_class = self.max_depth + 1
         y = np.zeros((self.n_nodes, n_class), dtype=np.float32)
