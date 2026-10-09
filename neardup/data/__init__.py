@@ -99,27 +99,38 @@ def node_features(imgs: np.ndarray, pool: int = 32) -> Tuple[np.ndarray, np.ndar
     return np.stack(pix, 0), np.stack(prnu, 0)
 
 
-def edit_aware_scalars(imgs: np.ndarray, tile: int = 32) -> np.ndarray:
+def edit_aware_scalars(imgs: np.ndarray, scale: float = 1.0) -> np.ndarray:
     """
-    Per-node scalars that accumulate with IPT edits (not wiped by per-image normalize):
-      - L2 distance of 96×96 gray to root (node 0), scaled by image size
-      - high-frequency energy = mean(|prnu_residual|)
-    Each scalar is tiled to ``tile`` dims so ChebNet can attend to them amid pooled pixels.
-    Returns [N, 2*tile].
+    Compact per-node edit features that accumulate along IPT paths (not wiped by
+    per-image L2 normalize of pixels/PRNU). Returns [N, 8]:
+      dist_to_root, mean|diff_to_root|, HF energy, image std,
+      mean gray, PRNU energy, max|diff|, and dist*HF interaction.
+    ``scale`` multiplies the vector (use ~10–20 when concatenating with unit-norm
+    appearance features so ChebNet does not ignore the 8-D block).
     """
     n = imgs.shape[0]
-    root = imgs[0].astype(np.float64).reshape(-1)
-    denom = float(np.sqrt(root.size))
+    root = imgs[0].astype(np.float64)
+    root_flat = root.reshape(-1)
+    denom = float(np.sqrt(root_flat.size))
     rows = []
     for i in range(n):
         g = imgs[i].astype(np.float64)
-        dist = float(np.linalg.norm(g.reshape(-1) - root) / max(denom, 1.0))
-        # normalize dist roughly into [0,1] for typical mild edits (cap at 80)
+        flat = g.reshape(-1)
+        diff = flat - root_flat
+        dist = float(np.linalg.norm(diff) / max(denom, 1.0))
         dist_n = min(dist / 80.0, 1.0)
-        hf = float(np.mean(np.abs(prnu_residual(imgs[i]))))
-        # typical residual mean abs ~ few gray levels; scale softly
-        hf_n = min(hf / 20.0, 1.0)
-        rows.append(np.concatenate([np.full(tile, dist_n, dtype=np.float32), np.full(tile, hf_n, dtype=np.float32)]))
+        mad = float(np.mean(np.abs(diff)) / 255.0)
+        mx = float(np.max(np.abs(diff)) / 255.0)
+        hf = float(np.mean(np.abs(prnu_residual(imgs[i]))) / 20.0)
+        hf = min(hf, 1.0)
+        pr = prnu_residual(imgs[i])
+        pr_e = float(np.sqrt(np.mean(pr.astype(np.float64) ** 2)) / 20.0)
+        pr_e = min(pr_e, 1.0)
+        std = float(g.std() / 80.0)
+        mean = float(g.mean() / 255.0)
+        inter = dist_n * hf
+        row = np.asarray([dist_n, mad, hf, std, mean, pr_e, mx, inter], dtype=np.float32)
+        rows.append(row * float(scale))
     return np.stack(rows, 0)
 
 
@@ -167,20 +178,26 @@ class IPTGraphDataset(Dataset):
         imgs, depths, parents, edges = synthesize_ipt(root, self.n_nodes, rng, self.max_depth)
         pool = int(getattr(self, "pool", 32))
         pix, prnu = node_features(imgs, pool=pool)
-        # Edit-aware scalars (dist-to-root + HF energy), tiled — survive per-image normalize
-        edit = edit_aware_scalars(imgs, tile=pool)
+        # Compact edit features (scale so they dominate unit-norm appearance dims)
+        edit = edit_aware_scalars(imgs, scale=20.0)
+        edit_exp = np.concatenate([edit, edit * edit / 20.0], axis=1)  # [N, 16]
         # Full-res PRNU for link prediction
         prnu_full = []
         for i in range(imgs.shape[0]):
             prnu_full.append(flatten_norm(prnu_residual(imgs[i])))
         prnu_full_a = np.stack(prnu_full, 0)
+        # Down-weight L2-normalized appearance so 16-D edit block drives depth logits
+        pix_s = (pix * 0.05).astype(np.float32)
+        prnu_s = (prnu * 0.05).astype(np.float32)
         if self.feature == "prnu":
-            feat = np.concatenate([prnu, edit], axis=1)
+            feat = np.concatenate([prnu_s, edit_exp], axis=1)
+        elif self.feature == "edit":
+            feat = edit_exp.astype(np.float32)
         elif self.feature == "concat":
-            feat = np.concatenate([pix, prnu, edit], axis=1)
+            feat = np.concatenate([pix_s, prnu_s, edit_exp], axis=1)
         else:
-            feat = np.concatenate([pix, edit], axis=1)
-        # Adjacency from edit-aware block (more discriminative than pooled pixels alone)
+            feat = np.concatenate([pix_s, edit_exp], axis=1)
+        # Adjacency from compact edit features (depth-correlated similarity)
         adj = adjacency_from_features(edit)
         # one-hot depth labels (classes = max_depth+1)
         n_class = self.max_depth + 1
