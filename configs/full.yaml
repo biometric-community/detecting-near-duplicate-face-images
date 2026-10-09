@@ -10,9 +10,9 @@ model:
   name: chebnet
   n_nodes: 10
   max_depth: 4
-  hidden: 64
+  hidden: 16
   max_degree: 3
-  dropout: 0.3
+  dropout: 0.5
   feature: concat
 train:
   protocol: full
